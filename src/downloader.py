@@ -3,10 +3,7 @@ https://api.busobservatory.org/"""
 
 import os
 import boto3
-
-
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-DATA_DIR = os.path.join(ROOT_DIR, "data")
+from constants import DATA_DIR
 
 
 def fetch(bucket, key, target):
@@ -22,7 +19,7 @@ def download_bus_data():
     s3 = boto3.resource("s3")
     bucket = s3.Bucket("busobservatory-lake")
     objects = bucket.objects.filter(Prefix="feeds/sf_muni/COMPACTED")
-    bus_data_dir = os.path.join(DATA_DIR, "bus")
+    bus_data_dir = os.path.join(DATA_DIR, "bus", "sf")
     for obj in objects:
         fetch(bucket, obj.key, bus_data_dir)
 
