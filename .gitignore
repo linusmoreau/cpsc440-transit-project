@@ -1,4 +1,5 @@
 data/bus
+data/bus-static
 __pycache__
 
 .DS_Store

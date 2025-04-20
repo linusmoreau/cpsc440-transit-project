@@ -1,0 +1,123 @@
+import os
+import datetime
+import pandas as pd
+import pandas.core.groupby as pdcore
+from zoneinfo import ZoneInfo
+import matplotlib.pyplot as plt
+
+from constants import DATA_DIR, SCHEDULES
+
+
+def load_vehicle_data(date: datetime.date) -> pd.DataFrame | None:
+    """Loads and processes vehicle data for the given date"""
+    path = os.path.join(DATA_DIR, "bus", "sf", str(date) + ".parquet")
+    try:
+        df = pd.read_parquet(path, engine="fastparquet")
+    except:
+        print("Failed to load bus data for", date)
+        return None
+
+    # Remove rows without valid stop_id
+    df = df[df["vehicle.stop_id"].notnull()]
+    df = df.astype({"vehicle.stop_id": "int64"})
+
+    # Remove rows without valid trip_id and convert trip_id to int
+    df = df[df["vehicle.trip.trip_id"].notnull()]
+    df["vehicle.trip_id"] = df.apply(lambda row: int(row["vehicle.trip.trip_id"].split("_")[0]), axis=1)
+    
+    # Only keep necessary columns
+    df = df[["vehicle.trip_id", "vehicle.timestamp", "vehicle.stop_id", "vehicle.trip.route_id", "vehicle.trip.direction_id"]]
+
+    # Only keep the last record before a bus arrives
+    df.drop_duplicates(subset=["vehicle.trip_id", "vehicle.stop_id"], keep="last", inplace=True)
+    
+    return df
+    
+
+def load_schedule_data(date: datetime.date) -> pd.DataFrame:
+    """Loads and processes schedule data for the given date"""
+    
+    schedule_dir = os.path.join(DATA_DIR, "bus-static", "sf", get_dirname_for_gtfs_static(date))
+    path = os.path.join(schedule_dir, "stop_times.txt")
+    stop_time_df = pd.read_csv(path)
+    stop_time_df = stop_time_df[["trip_id", "departure_time", "stop_id"]]
+
+    path = os.path.join(schedule_dir, "stops.txt")
+    stop_df = pd.read_csv(path)
+    stop_df = stop_df[["stop_id", "stop_code"]]
+
+    # Add stop code info to stop times and only keep necessary columns
+    df = stop_time_df.join(stop_df.set_index("stop_id"), on="stop_id")[["trip_id", "departure_time", "stop_code"]]
+
+    # Drop all stops that appear twice in a trip to simplify comparisons
+    df.drop_duplicates(subset=["trip_id", "stop_code"], keep=False, inplace=True)
+    
+    return df
+    
+    
+def get_dirname_for_gtfs_static(date: datetime.date) -> str:
+    """Returns the directory name for the most recent schedule that includes the given date."""
+    for schedule in SCHEDULES:
+        if schedule["start"] <= date and schedule["end"] >= date:
+            return str(schedule["start"]) + "_" + str(schedule["end"])
+    raise ValueError("No schedule satisfies the given date", date)
+
+
+def get_delay(actual_time: datetime.datetime, scheduled_time: str) -> int:
+    tz = ZoneInfo("America/Los_Angeles")
+    t = scheduled_time.split(":")
+    h = int(t[0]) % 24
+    m = int(t[1])
+    s = int(t[2])
+    schedule_timestamp = actual_time.replace(hour=h, minute=m, second=s, tzinfo=tz)
+    naive = schedule_timestamp.replace(tzinfo=None) - datetime.timedelta(1)
+    schedule_timestamp_adjust = naive.replace(tzinfo=tz)
+    dif = actual_time - schedule_timestamp
+    dif_adjust = actual_time - schedule_timestamp_adjust
+    if abs(dif_adjust) < abs(dif):
+        dif = dif_adjust
+        schedule_timestamp = schedule_timestamp_adjust
+    return int(dif.total_seconds() / 60), schedule_timestamp.astimezone(datetime.UTC)
+
+
+def get_delay_df(vehicle_df: pd.DataFrame, schedule_df: pd.DataFrame) -> pd.DataFrame:
+    df = pd.merge(
+        left=vehicle_df, 
+        right=schedule_df, 
+        left_on=["vehicle.trip_id", "vehicle.stop_id"], 
+        right_on=["trip_id", "stop_code"],
+        validate="1:1"
+    )[["trip_id", "stop_code", "vehicle.timestamp", "departure_time", "vehicle.trip.route_id", "vehicle.trip.direction_id"]]
+    df[["delay", "schedule_time"]] = df.apply(lambda row: get_delay(row["vehicle.timestamp"], row["departure_time"]), axis=1, result_type="expand")
+    df = df[abs(df["delay"]) <= 120]
+    df = df[["trip_id", "stop_code", "vehicle.timestamp", "schedule_time", "delay", "vehicle.trip.route_id", "vehicle.trip.direction_id"]]
+    return df
+
+
+def bucket_time(t: datetime.datetime) -> datetime.datetime:
+    return t.replace(minute=t.minute//20*20, second=0, microsecond=0).astimezone(ZoneInfo("America/Los_Angeles"))
+
+
+def bucket_by_time(delay_df: pd.DataFrame) -> pdcore.DataFrameGroupBy:
+    # Place every bus update into a time bucket
+    delay_df["time_bucket"] = delay_df.apply(lambda row: bucket_time(row["vehicle.timestamp"]), axis=1)
+    
+    # Only include the first instance of the trip in the time bucket
+    delay_df = delay_df.drop_duplicates(subset=["trip_id", "time_bucket"], keep="first")
+    
+    bucket_df = delay_df[["time_bucket", "delay"]]
+    return bucket_df.groupby(["time_bucket"])
+    
+    
+def plot_bucket_statistics(groupby: pdcore.DataFrameGroupBy):
+    means = groupby.mean()
+    counts = groupby.count()
+    fig, ax1 = plt.subplots()
+    ax2 = ax1.twinx()
+    # Use 1:-1 to remove edge buckets which may be cut off
+    ax1.plot(means[1:-1], "g-", label="Mean delay")
+    ax2.plot(counts[1:-1], "b-", label="Bus count")
+    ax1.set_ylabel("Delays (minutes)", color="g")
+    ax2.set_ylabel("Number of buses", color="b")
+    fig.autofmt_xdate()
+    plt.show()
