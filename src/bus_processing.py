@@ -129,8 +129,8 @@ def bucket_by_time(delay_df: pd.DataFrame) -> pd.DataFrame:
     return bucket_df
 
 
-def store_time_buckets(date: datetime.date, buckets: pd.DataFrame):
-    path = os.path.join(DATA_DIR, "bus-aggregate")
+def store_time_buckets(date: datetime.date, buckets: pd.DataFrame, route: str):
+    path = os.path.join(DATA_DIR, "bus-aggregate", route)
     try:
         os.makedirs(path)
     except FileExistsError:
