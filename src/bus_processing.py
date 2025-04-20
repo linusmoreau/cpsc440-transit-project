@@ -1,7 +1,9 @@
+"""Module for processing bus data into more compact aggregates."""
+
 import os
+import sys
 import datetime
 import pandas as pd
-import pandas.core.groupby as pdcore
 from zoneinfo import ZoneInfo
 import matplotlib.pyplot as plt
 
@@ -12,7 +14,7 @@ for schedule in os.listdir(os.path.join(DATA_DIR, "bus-static", "sf")):
     start, end = schedule.split("_")
     start_date = datetime.datetime.strptime(start, "%Y-%m-%d").date()
     end_date = datetime.datetime.strptime(end, "%Y-%m-%d").date()
-    SCHEDULES.append({"start": start_date, "end": end_date})
+    SCHEDULES.append({"start": start_date, "end": end_date, "dirname": schedule})
 SCHEDULES.sort(key=lambda s: s["start"], reverse=True)
 
 
@@ -45,10 +47,14 @@ def load_vehicle_data(date: datetime.date) -> pd.DataFrame | None:
     return df
     
 
-def load_schedule_data(date: datetime.date) -> pd.DataFrame:
+def load_schedule_data_for_date(date: datetime.date) -> pd.DataFrame:
     """Loads and processes schedule data for the given date"""
-    
-    schedule_dir = os.path.join(DATA_DIR, "bus-static", "sf", get_dirname_for_gtfs_static(date))
+    return load_schedule_data(get_dirname_for_gtfs_static(date))
+
+
+def load_schedule_data(dirname: str) -> pd.DataFrame:
+    """Loads and processes schedule data for the given directory name"""
+    schedule_dir = os.path.join(DATA_DIR, "bus-static", "sf", dirname)
     path = os.path.join(schedule_dir, "stop_times.txt")
     stop_time_df = pd.read_csv(path)
     stop_time_df = stop_time_df[["trip_id", "departure_time", "stop_id"]]
@@ -56,7 +62,10 @@ def load_schedule_data(date: datetime.date) -> pd.DataFrame:
     path = os.path.join(schedule_dir, "stops.txt")
     stop_df = pd.read_csv(path)
     stop_df = stop_df[["stop_id", "stop_code"]]
+    return process_schedule_data(stop_time_df, stop_df)
 
+
+def process_schedule_data(stop_time_df: pd.DataFrame, stop_df: pd.DataFrame) -> pd.DataFrame:
     # Add stop code info to stop times and only keep necessary columns
     df = stop_time_df.join(stop_df.set_index("stop_id"), on="stop_id")[["trip_id", "departure_time", "stop_code"]]
 
@@ -140,6 +149,55 @@ def store_time_buckets(date: datetime.date, buckets: pd.DataFrame, route: str):
     buckets.to_csv(fpath, index=False)
     
     
+def process_all():
+    date = datetime.datetime.today().date()
+    for schedule in SCHEDULES:
+        dirname = schedule["dirname"]
+        start = schedule["start"]
+        end = schedule["end"]
+        print(f"Processing schedule {dirname}...")
+        if start > date:
+            continue
+        schedule_df = load_schedule_data(dirname)
+        if end < date:
+            date = end
+        while date >= start:    
+            print(f"Processing date {date}...")
+            vehicle_df = load_vehicle_data(date)
+            if vehicle_df is not None:
+                delay_df = get_delay_df(vehicle_df, schedule_df)
+                bucket_df = bucket_by_time(delay_df)
+                store_time_buckets(date, bucket_df, "all")
+                print(f"Processing date {date} complete!")
+            date -= datetime.timedelta(1)
+        print(f"Processing schedule {dirname} complete!")
+        
+        
+def process_between(start: datetime.date, end: datetime.date):
+    date = end
+    for schedule in SCHEDULES:
+        dirname = schedule["dirname"]
+        schedule_start = schedule["start"]
+        schedule_end = schedule["end"]
+        print(f"Processing schedule {dirname}...")
+        if schedule_start > date:
+            continue
+        schedule_df = load_schedule_data(dirname)
+        if schedule_end < date:
+            date = schedule_end
+        while date >= schedule_start and date >= start:
+            print(f"Processing date {date}...")
+            vehicle_df = load_vehicle_data(date)
+            if vehicle_df is not None:
+                delay_df = get_delay_df(vehicle_df, schedule_df)
+                bucket_df = bucket_by_time(delay_df)
+                store_time_buckets(date, bucket_df, "all")
+                print(f"Processing date {date} complete!")
+            date -= datetime.timedelta(1)
+        print(f"Processing schedule {dirname} complete!")
+        if date < start:
+            break
+
     
 def plot_bucket_statistics(agg: pd.DataFrame):
     fig, ax1 = plt.subplots()
@@ -179,3 +237,16 @@ def plot_bucket_statistics(agg: pd.DataFrame):
     plt.tight_layout()
     
     plt.show()
+    
+    
+if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        process_all()
+    elif len(sys.argv) == 3:
+        start_date = datetime.datetime.strptime(sys.argv[1], "%Y-%m-%d").date()
+        end_date = datetime.datetime.strptime(sys.argv[2], "%Y-%m-%d").date()
+        process_between(start_date, end_date)
+    else:
+        print("To process all: python bus_processing.py")
+        print("To process between dates: python bus_processing.py [start-date] [end-date]")
+        print("To process between dates (example): python bus_processing.py 2025-05-09 2024-08-16")
