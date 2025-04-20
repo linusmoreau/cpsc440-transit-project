@@ -5,7 +5,15 @@ import pandas.core.groupby as pdcore
 from zoneinfo import ZoneInfo
 import matplotlib.pyplot as plt
 
-from constants import DATA_DIR, SCHEDULES
+from constants import DATA_DIR
+
+SCHEDULES = []
+for schedule in os.listdir(os.path.join(DATA_DIR, "bus-static", "sf")):
+    start, end = schedule.split("_")
+    start_date = datetime.datetime.strptime(start, "%Y-%m-%d").date()
+    end_date = datetime.datetime.strptime(end, "%Y-%m-%d").date()
+    SCHEDULES.append({"start": start_date, "end": end_date})
+SCHEDULES.sort(key=lambda s: s["start"], reverse=True)
 
 
 def load_vehicle_data(date: datetime.date) -> pd.DataFrame | None:
@@ -21,15 +29,14 @@ def load_vehicle_data(date: datetime.date) -> pd.DataFrame | None:
     df = df[df["vehicle.stop_id"].notnull()]
     df = df.astype({"vehicle.stop_id": "int64"})
 
-    # Remove rows without valid trip_id and convert trip_id to int
+    # Remove rows without valid trip_id
     df = df[df["vehicle.trip.trip_id"].notnull()]
-    df["vehicle.trip_id"] = df.apply(lambda row: int(row["vehicle.trip.trip_id"].split("_")[0]), axis=1)
     
     # Only keep necessary columns
-    df = df[["vehicle.trip_id", "vehicle.timestamp", "vehicle.stop_id", "vehicle.trip.route_id", "vehicle.trip.direction_id"]]
+    df = df[["vehicle.trip.trip_id", "vehicle.timestamp", "vehicle.stop_id", "vehicle.trip.route_id", "vehicle.trip.direction_id"]]
 
     # Only keep the last record before a bus arrives
-    df.drop_duplicates(subset=["vehicle.trip_id", "vehicle.stop_id"], keep="last", inplace=True)
+    df.drop_duplicates(subset=["vehicle.trip.trip_id", "vehicle.stop_id"], keep="last", inplace=True)
     
     return df
     
@@ -84,7 +91,7 @@ def get_delay_df(vehicle_df: pd.DataFrame, schedule_df: pd.DataFrame) -> pd.Data
     df = pd.merge(
         left=vehicle_df, 
         right=schedule_df, 
-        left_on=["vehicle.trip_id", "vehicle.stop_id"], 
+        left_on=["vehicle.trip.trip_id", "vehicle.stop_id"], 
         right_on=["trip_id", "stop_code"],
         validate="1:1"
     )[["trip_id", "stop_code", "vehicle.timestamp", "departure_time", "vehicle.trip.route_id", "vehicle.trip.direction_id"]]
