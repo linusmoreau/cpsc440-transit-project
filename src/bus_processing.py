@@ -105,7 +105,7 @@ def bucket_time(t: datetime.datetime) -> datetime.datetime:
     return t.replace(minute=t.minute//20*20, second=0, microsecond=0).astimezone(ZoneInfo("America/Los_Angeles"))
 
 
-def bucket_by_time(delay_df: pd.DataFrame) -> pdcore.DataFrameGroupBy:
+def bucket_by_time(delay_df: pd.DataFrame) -> pd.DataFrame:
     # Place every bus update into a time bucket
     delay_df["time_bucket"] = delay_df.apply(lambda row: bucket_time(row["vehicle.timestamp"]), axis=1)
     
@@ -113,18 +113,51 @@ def bucket_by_time(delay_df: pd.DataFrame) -> pdcore.DataFrameGroupBy:
     delay_df = delay_df.drop_duplicates(subset=["trip_id", "time_bucket"], keep="first")
     
     bucket_df = delay_df[["time_bucket", "delay"]]
-    return bucket_df.groupby(["time_bucket"])
+    bucket_df = bucket_df.groupby(["time_bucket"]).agg(
+        delay_mean=("delay", "mean"),
+        delay_median=("delay", "median"),
+        late_5_min=("delay", lambda x: x[x >= 5].count()),
+        early_5_min=("delay", lambda x: x[x <= -5].count()),
+        count=("delay", "count")
+    ).reset_index()
+    return bucket_df
     
     
-def plot_bucket_statistics(groupby: pdcore.DataFrameGroupBy):
-    means = groupby.mean()
-    counts = groupby.count()
+def plot_bucket_statistics(agg: pd.DataFrame):
     fig, ax1 = plt.subplots()
     ax2 = ax1.twinx()
+    plt.axhline(0, color='black')
     # Use 1:-1 to remove edge buckets which may be cut off
-    ax1.plot(means[1:-1], "g-", label="Mean delay")
-    ax2.plot(counts[1:-1], "b-", label="Bus count")
+    x = agg["time_bucket"][1:-1]
+    ax1.plot(x, agg["delay_mean"][1:-1], "g-", label="Mean delay")
+    ax2.plot(x, agg["count"][1:-1], "b-", label="Bus count")
+    ax2.plot(x, agg["late_5_min"][1:-1], "r-", label=">5 mins late")
+    ax2.plot(x, agg["early_5_min"][1:-1], "y-", label=">5 mins early")
     ax1.set_ylabel("Delays (minutes)", color="g")
     ax2.set_ylabel("Number of buses", color="b")
     fig.autofmt_xdate()
+    ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.25),
+        fancybox=True, shadow=True, ncol=5)
+    ax2.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15),
+        fancybox=True, shadow=True, ncol=5)
+    
+    ax1_ylims = ax1.axes.get_ylim()           # Find y-axis limits set by the plotter
+    ax1_yratio = ax1_ylims[0] / ax1_ylims[1]  # Calculate ratio of lowest limit to highest limit
+
+    ax2_ylims = ax2.axes.get_ylim()           # Find y-axis limits set by the plotter
+    ax2_yratio = ax2_ylims[0] / ax2_ylims[1]  # Calculate ratio of lowest limit to highest limit
+
+
+    # If the plot limits ratio of plot 1 is smaller than plot 2, the first data set has
+    # a wider range range than the second data set. Calculate a new low limit for the
+    # second data set to obtain a similar ratio to the first data set.
+    # Else, do it the other way around
+
+    if ax1_yratio < ax2_yratio: 
+        ax2.set_ylim(bottom = ax2_ylims[1]*ax1_yratio)
+    else:
+        ax1.set_ylim(bottom = ax1_ylims[1]*ax2_yratio)
+
+    plt.tight_layout()
+    
     plt.show()
