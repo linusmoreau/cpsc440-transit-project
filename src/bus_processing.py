@@ -38,6 +38,10 @@ def load_vehicle_data(date: datetime.date) -> pd.DataFrame | None:
     # Only keep the last record before a bus arrives
     df.drop_duplicates(subset=["vehicle.trip.trip_id", "vehicle.stop_id"], keep="last", inplace=True)
     
+    # Drop last stop of each trip as it may not indicate an arrival
+    mask = df.duplicated(["vehicle.trip.trip_id"], keep="last")
+    df = df[mask]
+    
     return df
     
 
@@ -95,8 +99,11 @@ def get_delay_df(vehicle_df: pd.DataFrame, schedule_df: pd.DataFrame) -> pd.Data
         right_on=["trip_id", "stop_code"],
         validate="1:1"
     )[["trip_id", "stop_code", "vehicle.timestamp", "departure_time", "vehicle.trip.route_id", "vehicle.trip.direction_id"]]
+    
+    # Get delay and formatted schedule time
     df[["delay", "schedule_time"]] = df.apply(lambda row: get_delay(row["vehicle.timestamp"], row["departure_time"]), axis=1, result_type="expand")
-    df = df[abs(df["delay"]) <= 120]
+    
+    # Only keep necessary columns
     df = df[["trip_id", "stop_code", "vehicle.timestamp", "schedule_time", "delay", "vehicle.trip.route_id", "vehicle.trip.direction_id"]]
     return df
 
@@ -114,13 +121,24 @@ def bucket_by_time(delay_df: pd.DataFrame) -> pd.DataFrame:
     
     bucket_df = delay_df[["time_bucket", "delay"]]
     bucket_df = bucket_df.groupby(["time_bucket"]).agg(
-        delay_mean=("delay", "mean"),
-        delay_median=("delay", "median"),
+        delay_total=("delay", "sum"),
         late_5_min=("delay", lambda x: x[x >= 5].count()),
         early_5_min=("delay", lambda x: x[x <= -5].count()),
         count=("delay", "count")
     ).reset_index()
     return bucket_df
+
+
+def store_time_buckets(date: datetime.date, buckets: pd.DataFrame):
+    path = os.path.join(DATA_DIR, "bus-aggregate")
+    try:
+        os.makedirs(path)
+    except FileExistsError:
+        # directory already exists
+        pass
+    fpath = os.path.join(path, str(date) + ".csv")
+    buckets.to_csv(fpath, index=False)
+    
     
     
 def plot_bucket_statistics(agg: pd.DataFrame):
@@ -128,11 +146,11 @@ def plot_bucket_statistics(agg: pd.DataFrame):
     ax2 = ax1.twinx()
     plt.axhline(0, color='black')
     # Use 1:-1 to remove edge buckets which may be cut off
-    x = agg["time_bucket"][1:-1]
-    ax1.plot(x, agg["delay_mean"][1:-1], "g-", label="Mean delay")
-    ax2.plot(x, agg["count"][1:-1], "b-", label="Bus count")
-    ax2.plot(x, agg["late_5_min"][1:-1], "r-", label=">5 mins late")
-    ax2.plot(x, agg["early_5_min"][1:-1], "y-", label=">5 mins early")
+    x = agg["time_bucket"][:-1]
+    ax1.plot(x, agg["delay_total"][:-1] / agg["count"][:-1], "g-", label="Mean delay")
+    ax2.plot(x, agg["count"][:-1], "b-", label="Bus count")
+    ax2.plot(x, agg["late_5_min"][:-1], "r-", label=">5 mins late")
+    ax2.plot(x, agg["early_5_min"][:-1], "y-", label=">5 mins early")
     ax1.set_ylabel("Delays (minutes)", color="g")
     ax2.set_ylabel("Number of buses", color="b")
     fig.autofmt_xdate()
