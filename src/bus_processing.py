@@ -165,10 +165,14 @@ def process_all():
             print(f"Processing date {date}...")
             vehicle_df = load_vehicle_data(date)
             if vehicle_df is not None:
-                delay_df = get_delay_df(vehicle_df, schedule_df)
-                bucket_df = bucket_by_time(delay_df)
-                store_time_buckets(date, bucket_df, "all")
-                print(f"Processing date {date} complete!")
+                try:
+                    delay_df = get_delay_df(vehicle_df, schedule_df)
+                    bucket_df = bucket_by_time(delay_df)
+                    store_time_buckets(date, bucket_df, "all")
+                    print(f"Processing date {date} complete!")
+                except ValueError:
+                    print(f"Failed to process data for {date}")
+                    break
             date -= datetime.timedelta(1)
         print(f"Processing schedule {dirname} complete!")
         
@@ -189,14 +193,28 @@ def process_between(start: datetime.date, end: datetime.date):
             print(f"Processing date {date}...")
             vehicle_df = load_vehicle_data(date)
             if vehicle_df is not None:
-                delay_df = get_delay_df(vehicle_df, schedule_df)
-                bucket_df = bucket_by_time(delay_df)
-                store_time_buckets(date, bucket_df, "all")
-                print(f"Processing date {date} complete!")
+                try:
+                    delay_df = get_delay_df(vehicle_df, schedule_df)
+                    bucket_df = bucket_by_time(delay_df)
+                    store_time_buckets(date, bucket_df, "all")
+                    print(f"Processing date {date} complete!")
+                except ValueError:
+                    print(f"Failed to process data for {date}")
+                    break
             date -= datetime.timedelta(1)
         print(f"Processing schedule {dirname} complete!")
         if date < start:
             break
+        
+        
+def load_bucket_statistics(date: datetime.date):
+    path = os.path.join(DATA_DIR, "bus-aggregate", "all", str(date) + ".csv")
+    df = pd.read_csv(path, parse_dates=["time_bucket"])
+    return df
+
+
+def plot_bucket_statistics_from_file(date: datetime.date):
+    plot_bucket_statistics(load_bucket_statistics(date))
 
     
 def plot_bucket_statistics(agg: pd.DataFrame):
