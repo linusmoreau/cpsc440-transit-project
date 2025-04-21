@@ -226,7 +226,8 @@ def combine_bus_aggregates():
     df.to_csv(all_file_path, index=False)
         
         
-def load_bucket_statistics(date: datetime.date = None):
+def load_bucket_statistics(date: datetime.date = None) -> pd.DataFrame:
+    """Loads aggregate data for the given date. If no date is given, gets data for all dates."""
     if date is None:
         name = "all"
     else:
