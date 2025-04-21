@@ -207,8 +207,31 @@ def process_between(start: datetime.date, end: datetime.date):
             break
         
         
-def load_bucket_statistics(date: datetime.date):
-    path = os.path.join(DATA_DIR, "bus-aggregate", "all", str(date) + ".csv")
+def combine_bus_aggregates():
+    dir = os.path.join(DATA_DIR, "bus-aggregate", "all")
+    all_file_name = "all.csv"
+    all_file_path = os.path.join(dir, all_file_name)
+    if os.path.exists(all_file_path):
+        os.remove(all_file_path)
+    aggregates = os.listdir(dir)
+    dfs = []
+    for a in aggregates:
+        if a == all_file_name:
+            continue
+        path = os.path.join(dir, a)
+        df = pd.read_csv(path, parse_dates=["time_bucket"])
+        dfs.append(df)
+    df = pd.concat(dfs)
+    df = df.groupby(["time_bucket"]).sum().reset_index()
+    df.to_csv(all_file_path, index=False)
+        
+        
+def load_bucket_statistics(date: datetime.date = None):
+    if date is None:
+        name = "all"
+    else:
+        name = str(date)
+    path = os.path.join(DATA_DIR, "bus-aggregate", "all", name + ".csv")
     df = pd.read_csv(path, parse_dates=["time_bucket"])
     return df
 
