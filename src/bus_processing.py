@@ -292,3 +292,5 @@ if __name__ == "__main__":
         print("To process all: python bus_processing.py")
         print("To process between dates: python bus_processing.py [start-date] [end-date]")
         print("To process between dates (example): python bus_processing.py 2025-05-09 2024-08-16")
+        sys.exit()
+    combine_bus_aggregates()
