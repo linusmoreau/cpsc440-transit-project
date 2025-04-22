@@ -259,6 +259,7 @@ def plot_bucket_statistics(agg: pd.DataFrame):
     ax2.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15),
         fancybox=True, shadow=True, ncol=5)
     
+    # Y-axis zero-alignment as given by KobusNell on StackOverflow: https://stackoverflow.com/a/65824524
     ax1_ylims = ax1.axes.get_ylim()           # Find y-axis limits set by the plotter
     ax1_yratio = ax1_ylims[0] / ax1_ylims[1]  # Calculate ratio of lowest limit to highest limit
 
