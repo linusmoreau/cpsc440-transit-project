@@ -2,7 +2,7 @@ import pandas as pd
 import datetime
 import holidays
 
-US_HOLIDAYS = holidays.US()
+CALIFORNIA_HOLIDAYS = holidays.country_holidays("US", subdiv="CA", categories=holidays.GOVERNMENT)
 
 def build_calendar(start="2023-01-01", end="2025-04-14") -> pd.DataFrame:
     start = datetime.datetime.strptime(start, "%Y-%m-%d").date()
@@ -13,7 +13,7 @@ def build_calendar(start="2023-01-01", end="2025-04-14") -> pd.DataFrame:
         day_of_week = date.strftime("%A")
         calendar.append([
             date,
-            int(date in US_HOLIDAYS),
+            int(date in CALIFORNIA_HOLIDAYS),
             int(day_of_week == "Monday"),
             int(day_of_week == "Tuesday"),
             int(day_of_week == "Wednesday"),
