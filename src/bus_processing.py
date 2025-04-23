@@ -117,13 +117,17 @@ def get_delay_df(vehicle_df: pd.DataFrame, schedule_df: pd.DataFrame) -> pd.Data
     return df
 
 
-def bucket_time(t: datetime.datetime) -> datetime.datetime:
-    return t.replace(minute=t.minute//20*20, second=0, microsecond=0).astimezone(ZoneInfo("America/Los_Angeles"))
+def bucket_time(t: datetime.datetime, bucket_size: int) -> datetime.datetime:
+    return t.replace(minute=t.minute//bucket_size*bucket_size, second=0, microsecond=0).astimezone(ZoneInfo("America/Los_Angeles"))
 
 
-def assign_buckets(delay_df: pd.DataFrame):
+def assign_buckets(delay_df: pd.DataFrame, bucket_size: int):
+    # Reject invalid bucket_size
+    if 60 % bucket_size != 0:
+        raise ValueError("bucket_size must be an integer divisor of 60")
+    
     # Place every bus update into a time bucket
-    delay_df["time_bucket"] = delay_df.apply(lambda row: bucket_time(row["vehicle.timestamp"]), axis=1)
+    delay_df["time_bucket"] = delay_df.apply(lambda row: bucket_time(row["vehicle.timestamp"], bucket_size), axis=1)
     
     # Only include the first instance of the trip in the time bucket
     delay_df = delay_df.drop_duplicates(subset=["trip_id", "time_bucket"], keep="first")
@@ -158,11 +162,12 @@ def store_time_buckets(date: datetime.date, buckets: pd.DataFrame, setting: str)
     buckets.to_csv(fpath, index=False)
     
     
-def process_all():
-    process_between("1970-01-01", str(datetime.datetime.today().date()))
+def process_all(bucket_size: int = 20):
+    """`bucket_size` describes how long the time segments are in minutes. It must be an integer divisor of 60."""
+    process_between("1970-01-01", str(datetime.datetime.today().date()), bucket_size)
         
         
-def process_between(start: str, end: str):
+def process_between(start: str, end: str, bucket_size: int = 20):
     start = datetime.datetime.strptime(start, "%Y-%m-%d").date()
     end = datetime.datetime.strptime(end, "%Y-%m-%d").date()
     date = end
@@ -182,7 +187,7 @@ def process_between(start: str, end: str):
             if vehicle_df is not None:
                 try:
                     delay_df = get_delay_df(vehicle_df, schedule_df)
-                    bucket_df = assign_buckets(delay_df)
+                    bucket_df = assign_buckets(delay_df, bucket_size)
                     bucket_all_df = bucket_by_time(bucket_df, "all")
                     store_time_buckets(date, bucket_all_df, "all")
                     bucket_route_df = bucket_by_time(bucket_df, "routes")
