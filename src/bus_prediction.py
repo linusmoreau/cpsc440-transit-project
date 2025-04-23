@@ -5,6 +5,8 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import xgboost as xgb
 
 
 class LSTMModule(nn.Module):
@@ -68,26 +70,35 @@ def prepare_bus_data(data):
 
 
 class BusDelayPredictor:
-    def __init__(self, model):
-        self.model = model
+    def evaluate(self, test_X, test_y):
+        self.load()
+        y_pred = self.predict(test_X)
+        print("Shape of y_pred:", y_pred.shape)
+        print("Shape of test_y:", test_y.shape)
+        mse = mean_squared_error(test_y, y_pred)
+        return mse
 
 
 class LSTMPredictor(BusDelayPredictor):
     def __init__(self, model, window_size=24):
-        super().__init__(model)
         self.model = model
         self.window_size = window_size
 
-    def train(self, X, y, epochs=10, batch_size=32, learning_rate=0.001):
-        scaler = MinMaxScaler()
-        X = scaler.fit_transform(X)
+    def train(
+        self, X, y, epochs=10, batch_size=32, learning_rate=0.001, scaler_only=False
+    ):
+        self.scaler = MinMaxScaler()
+        X = self.scaler.fit_transform(X)
 
-        X_train, X_test, y_train, y_test = train_test_split(
+        if scaler_only:
+            return
+
+        X_train, X_val, y_train, y_val = train_test_split(
             X, y, test_size=0.2, shuffle=False
         )
 
         train_ds = DelayDataset(X_train, y_train, self.window_size)
-        val_ds = DelayDataset(X_test, y_test, self.window_size)
+        val_ds = DelayDataset(X_val, y_val, self.window_size)
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False)
         val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
@@ -121,19 +132,61 @@ class LSTMPredictor(BusDelayPredictor):
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                torch.save(self.model.state_dict(), "lstm_predictor.pt")
+                torch.save(self.model, "lstm_predictor.pt")
+
+    def load(self):
+        self.model = torch.load("lstm_predictor.pt", weights_only=False)
+        self.model.eval()
 
     def predict(self, X):
-        self.modal.load_state_dict(torch.load("lstm_predictor.pt"))
-        self.model.eval()
-        series = X["avg_delay"].values
-        series = np.nan_to_num(series)
-        series = (
-            torch.tensor(series[-self.window_size :], dtype=torch.float32)
-            .unsqueeze(0)
-            .unsqueeze(-1)
-        )
+        X = self.scaler.transform(X)
+        X = torch.tensor(X, dtype=torch.float32)
+
         with torch.no_grad():
-            y_pred = self.model(series)
+            y_pred = self.model(X)
 
         return y_pred.squeeze().numpy()
+
+    def evaluate(self, test_X, test_y):
+        self.load()
+        X_lagged = []
+        for i in range(self.window_size, len(test_X)):
+            X_lagged.append(test_X[i - self.window_size : i])
+
+        X_lagged = np.array(X_lagged)
+        y_pred = self.model(torch.tensor(X_lagged, dtype=torch.float32))
+        y_pred = y_pred.squeeze().detach().numpy()
+        test_y = test_y[self.window_size :]
+        mse = mean_squared_error(test_y, y_pred)
+        return mse
+
+
+class XGBoostPredictor(BusDelayPredictor):
+    def __init__(self):
+        self.model = xgb.XGBRegressor(
+            objective="reg:squarederror",
+            n_estimators=100,
+            learning_rate=0.1,
+            max_depth=5,
+            min_child_weight=1,
+            subsample=0.8,
+            colsample_bytree=0.8,
+        )
+
+    def train(self, X, y):
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=0.2, shuffle=False
+        )
+
+        self.model.fit(X_train, y_train)
+        y_pred = self.model.predict(X_val)
+        mse = mean_squared_error(y_val, y_pred)
+        print(f"Validation MSE: {mse:.4f}")
+        self.model.save_model("xgboost_predictor.json")
+
+    def load(self):
+        self.model.load_model("xgboost_predictor.json")
+
+    def predict(self, X):
+        y_pred = self.model.predict(X)
+        return y_pred
