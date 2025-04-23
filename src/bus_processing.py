@@ -121,15 +121,24 @@ def bucket_time(t: datetime.datetime) -> datetime.datetime:
     return t.replace(minute=t.minute//20*20, second=0, microsecond=0).astimezone(ZoneInfo("America/Los_Angeles"))
 
 
-def bucket_by_time(delay_df: pd.DataFrame) -> pd.DataFrame:
+def assign_buckets(delay_df: pd.DataFrame):
     # Place every bus update into a time bucket
     delay_df["time_bucket"] = delay_df.apply(lambda row: bucket_time(row["vehicle.timestamp"]), axis=1)
     
     # Only include the first instance of the trip in the time bucket
     delay_df = delay_df.drop_duplicates(subset=["trip_id", "time_bucket"], keep="first")
     
-    bucket_df = delay_df[["time_bucket", "delay"]]
-    bucket_df = bucket_df.groupby(["time_bucket"]).agg(
+    return delay_df
+
+
+def bucket_by_time(bucket_df: pd.DataFrame, setting: str = "all") -> pd.DataFrame:
+    """Setting is either `all` for aggregation of all buses or `routes` for aggregation by route."""
+    if setting == "all":
+        group_columns = ["time_bucket"]
+    elif setting == "routes":
+        group_columns = ["vehicle.trip.route_id", "vehicle.trip.direction_id", "time_bucket"]
+    bucket_df = bucket_df[group_columns + ["delay"]]
+    bucket_df = bucket_df.groupby(group_columns).agg(
         delay_total=("delay", "sum"),
         late_5_min=("delay", lambda x: x[x >= 5].count()),
         early_5_min=("delay", lambda x: x[x <= -5].count()),
@@ -138,8 +147,8 @@ def bucket_by_time(delay_df: pd.DataFrame) -> pd.DataFrame:
     return bucket_df
 
 
-def store_time_buckets(date: datetime.date, buckets: pd.DataFrame, route: str):
-    path = os.path.join(DATA_DIR, "bus-aggregate", route)
+def store_time_buckets(date: datetime.date, buckets: pd.DataFrame, setting: str):
+    path = os.path.join(DATA_DIR, "bus-aggregate", setting)
     try:
         os.makedirs(path)
     except FileExistsError:
@@ -150,42 +159,20 @@ def store_time_buckets(date: datetime.date, buckets: pd.DataFrame, route: str):
     
     
 def process_all():
-    date = datetime.datetime.today().date()
-    for schedule in SCHEDULES:
-        dirname = schedule["dirname"]
-        start = schedule["start"]
-        end = schedule["end"]
-        print(f"Processing schedule {dirname}...")
-        if start > date:
-            continue
-        schedule_df = load_schedule_data(dirname)
-        if end < date:
-            date = end
-        while date >= start:    
-            print(f"Processing date {date}...")
-            vehicle_df = load_vehicle_data(date)
-            if vehicle_df is not None:
-                try:
-                    delay_df = get_delay_df(vehicle_df, schedule_df)
-                    bucket_df = bucket_by_time(delay_df)
-                    store_time_buckets(date, bucket_df, "all")
-                    print(f"Processing date {date} complete!")
-                except ValueError:
-                    print(f"Failed to process data for {date}")
-                    break
-            date -= datetime.timedelta(1)
-        print(f"Processing schedule {dirname} complete!")
+    process_between("1970-01-01", str(datetime.datetime.today().date()))
         
         
-def process_between(start: datetime.date, end: datetime.date):
+def process_between(start: str, end: str):
+    start = datetime.datetime.strptime(start, "%Y-%m-%d").date()
+    end = datetime.datetime.strptime(end, "%Y-%m-%d").date()
     date = end
     for schedule in SCHEDULES:
         dirname = schedule["dirname"]
         schedule_start = schedule["start"]
         schedule_end = schedule["end"]
-        print(f"Processing schedule {dirname}...")
         if schedule_start > date:
             continue
+        print(f"Processing schedule {dirname}...")
         schedule_df = load_schedule_data(dirname)
         if schedule_end < date:
             date = schedule_end
@@ -195,20 +182,24 @@ def process_between(start: datetime.date, end: datetime.date):
             if vehicle_df is not None:
                 try:
                     delay_df = get_delay_df(vehicle_df, schedule_df)
-                    bucket_df = bucket_by_time(delay_df)
-                    store_time_buckets(date, bucket_df, "all")
+                    bucket_df = assign_buckets(delay_df)
+                    bucket_all_df = bucket_by_time(bucket_df, "all")
+                    store_time_buckets(date, bucket_all_df, "all")
+                    bucket_route_df = bucket_by_time(bucket_df, "routes")
+                    store_time_buckets(date, bucket_route_df, "routes")
                     print(f"Processing date {date} complete!")
                 except ValueError:
                     print(f"Failed to process data for {date}")
                     break
             date -= datetime.timedelta(1)
-        print(f"Processing schedule {dirname} complete!")
         if date < start:
             break
+    print("Processing complete!")
         
         
-def combine_bus_aggregates():
-    dir = os.path.join(DATA_DIR, "bus-aggregate", "all")
+def combine_bus_aggregates(setting: str = "all"):
+    """Setting is either `all` for aggregation of all buses or `routes` for aggregation by route."""
+    dir = os.path.join(DATA_DIR, "bus-aggregate", setting)
     all_file_name = "all.csv"
     all_file_path = os.path.join(dir, all_file_name)
     if os.path.exists(all_file_path):
@@ -222,18 +213,42 @@ def combine_bus_aggregates():
         df = pd.read_csv(path, parse_dates=["time_bucket"])
         dfs.append(df)
     df = pd.concat(dfs)
-    df = df.groupby(["time_bucket"]).sum().reset_index()
+    if setting == "all":
+        group_columns = ["time_bucket"]
+    elif setting == "routes":
+        group_columns = ["vehicle.trip.route_id", "vehicle.trip.direction_id", "time_bucket"]
+    else:
+        raise ValueError(f"Unknown setting \"{setting}\"")
+    df = df.groupby(group_columns).sum().reset_index()
+    if setting == "routes":
+        df = df.sort_values(group_columns, ascending=True)
     df.to_csv(all_file_path, index=False)
         
         
-def load_bucket_statistics(date: datetime.date = None) -> pd.DataFrame:
-    """Loads aggregate data for the given date. If no date is given, gets data for all dates."""
+def load_bucket_statistics(setting: str = "all", date: datetime.date = None) -> pd.DataFrame:
+    """Loads aggregate data for the given setting and date. 
+    Setting can be either `all` or `routes`.
+    If no date is given, gets data for all dates."""
     if date is None:
         name = "all"
     else:
         name = str(date)
-    path = os.path.join(DATA_DIR, "bus-aggregate", "all", name + ".csv")
-    df = pd.read_csv(path, parse_dates=["time_bucket"])
+    dtypes = {
+        "time_bucket": "object",
+        "delay_total": "Int32",
+        "late_5_min": "UInt32",
+        "early_5_min": "UInt32",
+        "count": "UInt32",
+    }
+    if setting == "all":
+        pass
+    elif setting == "routes":
+        dtypes["vehicle.trip.route_id"] = "string"
+        dtypes["vehicle.trip.direction_id"] = "Float32"
+    else:
+        raise ValueError("Setting must be either all or routes.")
+    path = os.path.join(DATA_DIR, "bus-aggregate", setting, name + ".csv")
+    df = pd.read_csv(path, dtype=dtypes, engine="python", parse_dates=["time_bucket"])
     return df
 
 
@@ -286,9 +301,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 1:
         process_all()
     elif len(sys.argv) == 3:
-        start_date = datetime.datetime.strptime(sys.argv[1], "%Y-%m-%d").date()
-        end_date = datetime.datetime.strptime(sys.argv[2], "%Y-%m-%d").date()
-        process_between(start_date, end_date)
+        process_between(sys.argv[1], sys.argv[2])
     else:
         print("To process all: python bus_processing.py")
         print("To process between dates: python bus_processing.py [start-date] [end-date]")
