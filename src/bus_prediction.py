@@ -3,10 +3,33 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 import xgboost as xgb
+from pytorch_forecasting import TemporalFusionTransformer
+from pytorch_forecasting.data import TimeSeriesDataSet
+from pytorch_forecasting.metrics import RMSE
+from pytorch_forecasting import Baseline
+import lightning.pytorch as pl
+from lightning.pytorch.callbacks import ModelCheckpoint
+from pytorch_forecasting.data.encoders import NaNLabelEncoder
+
+categorical_columns = [
+    "holiday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "month",
+    "day",
+    "hour",
+    "minute",
+]
+numerical_columns = ["temp", "dwpt", "rhum", "prcp", "wdir", "wspd", "pres", "coco"]
 
 
 class LSTMModule(nn.Module):
@@ -60,7 +83,7 @@ def prepare_bus_data(data):
     # print(f"Train data shape: {train_data.shape}")
     # print(f"Test data shape: {test_data.shape}")
 
-    drop_columns = ["delay_total", "count", "time_bucket"]
+    drop_columns = ["delay_total", "count", "avg_delay"]
     X_train = train_data.drop(columns=drop_columns)
     y_train = train_data["avg_delay"]
     X_test = test_data.drop(columns=drop_columns)
@@ -84,17 +107,14 @@ class LSTMPredictor(BusDelayPredictor):
         self.model = model
         self.window_size = window_size
 
-    def train(
-        self, X, y, epochs=10, batch_size=32, learning_rate=0.001, scaler_only=False
-    ):
-        self.scaler = MinMaxScaler()
-        X = self.scaler.fit_transform(X)
+    def train(self, X, y, epochs=10, batch_size=32, learning_rate=0.001):
+        X = X.drop(columns=["time_bucket"])
 
-        if scaler_only:
-            return
+        self.scaler = MinMaxScaler()
+        X[numerical_columns] = self.scaler.fit_transform(X[numerical_columns])
 
         X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=0.2, shuffle=False
+            X.values, y.values, test_size=0.2, shuffle=False
         )
 
         train_ds = DelayDataset(X_train, y_train, self.window_size)
@@ -139,24 +159,27 @@ class LSTMPredictor(BusDelayPredictor):
         self.model.eval()
 
     def predict(self, X):
-        X = self.scaler.transform(X)
-        X = torch.tensor(X, dtype=torch.float32)
+        X = X.drop(columns=["time_bucket"])
+        X[numerical_columns] = self.scaler.transform(X[numerical_columns])
+        X = X.values
+
+        # create lagged X, just like DelayDataset
+        X_lagged = []
+        for i in range(self.window_size, len(X)):
+            X_lagged.append(X[i - self.window_size : i])
+        X = torch.tensor(X_lagged, dtype=torch.float32)
 
         with torch.no_grad():
             y_pred = self.model(X)
 
-        return y_pred.squeeze().numpy()
+        return y_pred.squeeze().detach().numpy()
 
     def evaluate(self, test_X, test_y):
         self.load()
-        X_lagged = []
-        for i in range(self.window_size, len(test_X)):
-            X_lagged.append(test_X[i - self.window_size : i])
-
-        X_lagged = np.array(X_lagged)
-        y_pred = self.model(torch.tensor(X_lagged, dtype=torch.float32))
-        y_pred = y_pred.squeeze().detach().numpy()
+        y_pred = self.predict(test_X)
+        print("Shape of y_pred:", y_pred.shape)
         test_y = test_y[self.window_size :]
+        print("Shape of test_y:", test_y.shape)
         mse = mean_squared_error(test_y, y_pred)
         return mse
 
@@ -174,8 +197,9 @@ class XGBoostPredictor(BusDelayPredictor):
         )
 
     def train(self, X, y):
+        X = X.drop(columns=["time_bucket"])
         X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=0.2, shuffle=False
+            X.values, y.values, test_size=0.2, shuffle=False
         )
 
         self.model.fit(X_train, y_train)
@@ -188,5 +212,114 @@ class XGBoostPredictor(BusDelayPredictor):
         self.model.load_model("xgboost_predictor.json")
 
     def predict(self, X):
-        y_pred = self.model.predict(X)
+        X = X.drop(columns=["time_bucket"])
+        y_pred = self.model.predict(X.values)
         return y_pred
+
+
+class TFTPredictor(BusDelayPredictor):
+    def __init__(
+        self,
+        max_encoder_length=24,
+        max_prediction_length=1,
+        hidden_size=64,
+        num_layers=2,
+        dropout=0.1,
+        attention_head_size=4,
+    ):
+        self.max_encoder_length = max_encoder_length
+        self.max_prediction_length = max_prediction_length
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.attention_head_size = attention_head_size
+
+    def prepare_data(self, X, y):
+        data = pd.concat([X, y], axis=1)
+
+        # add constant bus_id as group id
+        data["bus_id"] = 0
+
+        # add time index using time_bucket
+        data["time_idx"] = np.arange(len(data))
+        data = data.drop(columns=["time_bucket"])
+
+        data[categorical_columns] = data[categorical_columns].astype(str)
+
+        return data
+
+    def train(self, X, y, batch_size=64, epochs=10, learning_rate=0.001):
+        self.scaler = StandardScaler()
+        X[numerical_columns] = self.scaler.fit_transform(X[numerical_columns])
+
+        data = self.prepare_data(X, y)
+
+        data_train, data_val = train_test_split(data, test_size=0.2, shuffle=False)
+
+        self.training_ds = TimeSeriesDataSet(
+            data_train,
+            time_idx="time_idx",
+            target="avg_delay",
+            group_ids=["bus_id"],
+            min_encoder_length=1,
+            max_encoder_length=self.max_encoder_length,
+            min_prediction_length=1,
+            max_prediction_length=self.max_prediction_length,
+            time_varying_known_categoricals=categorical_columns,
+            time_varying_known_reals=numerical_columns + ["time_idx"],
+            time_varying_unknown_categoricals=[],
+            time_varying_unknown_reals=["avg_delay"],
+            target_normalizer=None,
+            categorical_encoders={
+                col: NaNLabelEncoder(add_nan=True) for col in categorical_columns
+            },
+        )
+
+        self.validation_ds = TimeSeriesDataSet.from_dataset(
+            self.training_ds,
+            data_val,
+            predict=True,
+            stop_randomization=True,
+        )
+
+        train_loader = self.training_ds.to_dataloader(train=True, batch_size=batch_size)
+        val_loader = self.validation_ds.to_dataloader(
+            train=False, batch_size=batch_size
+        )
+
+        self.model = TemporalFusionTransformer.from_dataset(
+            self.training_ds,
+            learning_rate=learning_rate,
+            hidden_size=self.hidden_size,
+            attention_head_size=self.attention_head_size,
+            dropout=self.dropout,
+            hidden_continuous_size=8,
+            output_size=1,
+            loss=RMSE(),
+            log_interval=10,
+        )
+
+        self.trainer = pl.Trainer(
+            max_epochs=epochs,
+            gradient_clip_val=0.1,
+            enable_checkpointing=True,
+            enable_model_summary=True,
+            callbacks=[ModelCheckpoint(monitor="val_loss")],
+        )
+
+        self.trainer.fit(self.model, train_loader, val_loader)
+
+    def evaluate(self, X, y):
+        data = self.prepare_data(X, y)
+
+        test_ds = TimeSeriesDataSet.from_dataset(
+            self.training_ds,
+            data,
+            predict=True,
+            stop_randomization=True,
+        )
+
+        test_loader = test_ds.to_dataloader(train=False, batch_size=64)
+
+        # best_tft = TemporalFusionTransformer.load_from_checkpoint(self.trainer.checkpoint_callback.best_model_path)
+        self.trainer.test(self.model, test_loader, ckpt_path="best")
