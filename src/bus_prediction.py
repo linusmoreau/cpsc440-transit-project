@@ -17,13 +17,7 @@ from pytorch_forecasting.data.encoders import NaNLabelEncoder
 
 categorical_columns = [
     "holiday",
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
+    "weekday",
     "month",
     "day",
     "hour",
