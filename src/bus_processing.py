@@ -10,12 +10,15 @@ import matplotlib.pyplot as plt
 from constants import DATA_DIR
 
 SCHEDULES = []
-for schedule in os.listdir(os.path.join(DATA_DIR, "bus-static", "sf")):
-    start, end = schedule.split("_")
-    start_date = datetime.datetime.strptime(start, "%Y-%m-%d").date()
-    end_date = datetime.datetime.strptime(end, "%Y-%m-%d").date()
-    SCHEDULES.append({"start": start_date, "end": end_date, "dirname": schedule})
-SCHEDULES.sort(key=lambda s: s["start"], reverse=True)
+try:
+    for schedule in os.listdir(os.path.join(DATA_DIR, "bus-static", "sf")):
+        start, end = schedule.split("_")
+        start_date = datetime.datetime.strptime(start, "%Y-%m-%d").date()
+        end_date = datetime.datetime.strptime(end, "%Y-%m-%d").date()
+        SCHEDULES.append({"start": start_date, "end": end_date, "dirname": schedule})
+    SCHEDULES.sort(key=lambda s: s["start"], reverse=True)
+except FileNotFoundError:
+    pass
 
 
 def load_vehicle_data(date: datetime.date) -> pd.DataFrame | None:
