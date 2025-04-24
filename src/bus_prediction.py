@@ -185,15 +185,16 @@ class LSTMPredictor(BusDelayPredictor):
 
 
 class XGBoostPredictor(BusDelayPredictor):
-    def __init__(self):
+    def __init__(self, n_estimators=100, learning_rate=0.1, max_depth=5, min_child_weight=1, subsample=0.8, colsample_bytree=0.8, reg_lambda=1):
         self.model = xgb.XGBRegressor(
             objective="reg:squarederror",
-            n_estimators=100,
-            learning_rate=0.1,
-            max_depth=5,
-            min_child_weight=1,
-            subsample=0.8,
-            colsample_bytree=0.8,
+            n_estimators=n_estimators,
+            learning_rate=learning_rate,
+            max_depth=max_depth,
+            min_child_weight=min_child_weight,
+            subsample=subsample,
+            colsample_bytree=colsample_bytree,
+            reg_lambda=reg_lambda,
         )
 
     def train(self, X, y):

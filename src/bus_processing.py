@@ -4,6 +4,7 @@ import os
 import sys
 import datetime
 import pandas as pd
+import numpy as np
 from zoneinfo import ZoneInfo
 import matplotlib.pyplot as plt
 
@@ -258,6 +259,57 @@ def load_bucket_statistics(setting: str = "all", date: datetime.date = None) -> 
     path = os.path.join(DATA_DIR, "bus-aggregate", setting, name + ".csv")
     df = pd.read_csv(path, dtype=dtypes, engine="python", parse_dates=["time_bucket"])
     return df
+
+
+def load_dataset(setting: str = "all") -> pd.DataFrame:
+    if setting == "all":
+        name = "dataset.csv"
+    elif setting == "routes":
+        name = "dataset_routes.csv"
+    else:
+        raise ValueError("Setting must be either all or routes.")
+    path = os.path.join(DATA_DIR, name)
+    df = pd.read_csv(path, engine="python", parse_dates=["time_bucket"])
+    return df
+
+
+def encode_cyclical_feature(data, col, max_val):
+    data[col + "_sin"] = np.sin(2 * np.pi * data[col]/max_val)
+    data[col + "_cos"] = np.cos(2 * np.pi * data[col]/max_val)
+    return data
+
+
+def prepare_bus_data(data: pd.DataFrame):
+    boundary_time = pd.Timestamp("2025-01-01 00:00:00-08:00")
+
+    # add avg_delay feature
+    data["avg_delay"] = data["delay_total"] / data["count"]
+    data["avg_delay"] = data["avg_delay"].fillna(0)
+
+    # add time features
+    def get_time_features(row):
+        d: datetime.datetime = row["time_bucket"]
+        return [d.timetuple().tm_yday, 60*d.hour + d.minute]
+    data[["day", "minute"]] = data.apply(get_time_features, axis=1, result_type="expand")
+    data = encode_cyclical_feature(data, "day", 366)
+    data = encode_cyclical_feature(data, "minute", 60*24)
+    data = encode_cyclical_feature(data, "weekday", 7)
+    data = data.drop(columns=["day", "minute", "weekday"])
+    
+    if "vehicle.trip.route_id" in list(data):
+        data["vehicle.trip.route_id"] = data["vehicle.trip.route_id"].astype("category").cat.codes
+    
+    # using 2024 data as training, 2025 as test
+    train_data = data[data["time_bucket"] < boundary_time]
+    test_data = data[data["time_bucket"] >= boundary_time]
+
+    drop_columns = ["delay_total", "count", "avg_delay", "late_5_min", "early_5_min"]
+    X_train = train_data.drop(columns=drop_columns)
+    y_train = train_data["avg_delay"]
+    X_test = test_data.drop(columns=drop_columns)
+    y_test = test_data["avg_delay"]
+
+    return X_train, y_train, X_test, y_test
 
 
 def plot_bucket_statistics_from_file(date: datetime.date):
