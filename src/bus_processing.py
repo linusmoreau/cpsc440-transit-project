@@ -279,36 +279,55 @@ def encode_cyclical_feature(data, col, max_val):
     return data
 
 
-def prepare_bus_data(data: pd.DataFrame):
-    boundary_time = pd.Timestamp("2025-01-01 00:00:00-08:00")
+def prepare_bus_data(data: pd.DataFrame, time_type = "ordinal"):
+    data = add_avg_delay_feature(data)
+    data = add_time_features(data, time_type)
+    if "vehicle.trip.route_id" in list(data):
+        data = make_route_ordinal(data)
+    return divide_dataset(data)
 
-    # add avg_delay feature
+
+def add_avg_delay_feature(data: pd.DataFrame):
     data["avg_delay"] = data["delay_total"] / data["count"]
     data["avg_delay"] = data["avg_delay"].fillna(0)
+    return data
+    
+    
+def make_route_ordinal(data: pd.DataFrame):
+    data["vehicle.trip.route_id"] = data["vehicle.trip.route_id"].astype("category").cat.codes
+    return data
 
-    # add time features
+
+def add_time_features(data: pd.DataFrame, as_type="ordinal"):
+    """`as_type`: one of "ordinal", "cyclical", or "one-hot" """
+    
     def get_time_features(row):
         d: datetime.datetime = row["time_bucket"]
         return [d.timetuple().tm_yday, 60*d.hour + d.minute]
+
     data[["day", "minute"]] = data.apply(get_time_features, axis=1, result_type="expand")
-    data = encode_cyclical_feature(data, "day", 366)
-    data = encode_cyclical_feature(data, "minute", 60*24)
-    data = encode_cyclical_feature(data, "weekday", 7)
-    data = data.drop(columns=["day", "minute", "weekday"])
-    
-    if "vehicle.trip.route_id" in list(data):
-        data["vehicle.trip.route_id"] = data["vehicle.trip.route_id"].astype("category").cat.codes
-    
-    # using 2024 data as training, 2025 as test
+    if as_type == "cyclical":
+        data = encode_cyclical_feature(data, "day", 366)
+        data = encode_cyclical_feature(data, "minute", 60*24)
+        data = encode_cyclical_feature(data, "weekday", 7)
+        data = data.drop(columns=["day", "minute", "weekday"])
+    elif as_type == "one-hot":
+        one_hot = pd.get_dummies(data["weekday"], prefix="weekday_")
+        data = data.drop(columns=["weekday"])
+        data = data.join(one_hot)
+    return data
+
+
+def divide_dataset(data: pd.DataFrame, boundary_time=pd.Timestamp("2025-01-01 00:00:00-08:00")):
+    # using older data as training, newer data as test
     train_data = data[data["time_bucket"] < boundary_time]
     test_data = data[data["time_bucket"] >= boundary_time]
-
+    
     drop_columns = ["delay_total", "count", "avg_delay", "late_5_min", "early_5_min"]
     X_train = train_data.drop(columns=drop_columns)
     y_train = train_data["avg_delay"]
     X_test = test_data.drop(columns=drop_columns)
     y_test = test_data["avg_delay"]
-
     return X_train, y_train, X_test, y_test
 
 

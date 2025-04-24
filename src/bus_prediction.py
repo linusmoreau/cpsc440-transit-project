@@ -94,6 +94,12 @@ class BusDelayPredictor:
         print("Shape of test_y:", test_y.shape)
         mse = mean_squared_error(test_y, y_pred)
         return mse
+    
+    def load(self):
+        pass
+    
+    def predict(self):
+        raise NotImplementedError("Predict function not implemented for this BusDelayPredictor")
 
 
 class LSTMPredictor(BusDelayPredictor):
@@ -318,3 +324,26 @@ class TFTPredictor(BusDelayPredictor):
 
         # best_tft = TemporalFusionTransformer.load_from_checkpoint(self.trainer.checkpoint_callback.best_model_path)
         self.trainer.test(self.model, test_loader, ckpt_path="best")
+
+
+class NullModel(BusDelayPredictor):
+    """Model that assumes the schedules are entirely correct."""
+    
+    def predict(self, X):
+        return np.array([0] * len(X))
+    
+    
+class BaselineModel(BusDelayPredictor):
+    """Model that simply uses the average for a given day of week and time of day."""
+    
+    def train(self, X: pd.DataFrame, y: pd.DataFrame):
+        df = X[["weekday", "minute"]].copy()
+        df["delay"] = y.values
+        self.parameters = df.groupby(["weekday", "minute"]).mean()
+        return self.parameters
+    
+    def predict(self, X: pd.DataFrame):
+        df = X[["weekday", "minute"]]
+        df = df.join(self.parameters, ["weekday", "minute"])
+        return df["delay"]
+    
