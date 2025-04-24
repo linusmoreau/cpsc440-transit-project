@@ -15,21 +15,15 @@ import lightning.pytorch as pl
 from lightning.pytorch.callbacks import ModelCheckpoint
 from pytorch_forecasting.data.encoders import NaNLabelEncoder
 
-categorical_columns = [
-    "holiday",
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-    "month",
-    "day",
-    "hour",
-    "minute",
+categorical_columns = ["holiday"]
+numerical_columns = [
+    "weekday_sin", "weekday_cos",
+    "month_sin", "month_cos",
+    "day_sin", "day_cos",
+    "hour_sin", "hour_cos",
+    "minute_sin", "minute_cos",
+    "temp", "dwpt", "rhum", "prcp", "wdir", "wspd", "pres", "coco"
 ]
-numerical_columns = ["temp", "dwpt", "rhum", "prcp", "wdir", "wspd", "pres", "coco"]
 
 
 class LSTMModule(nn.Module):
@@ -63,7 +57,13 @@ class DelayDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 
-def prepare_bus_data(data):
+def encode_cyclical_feature(data, col, max_val):
+    data[col + "_sin"] = np.sin(2 * np.pi * data[col]/max_val)
+    data[col + "_cos"] = np.cos(2 * np.pi * data[col]/max_val)
+    return data
+
+
+def prepare_bus_data(data: pd.DataFrame):
     # data is a pandas DataFrame
     boundary_time = pd.Timestamp("2025-01-01 00:00:00-08:00")
 
@@ -76,6 +76,12 @@ def prepare_bus_data(data):
     data["day"] = data["time_bucket"].dt.day
     data["hour"] = data["time_bucket"].dt.hour
     data["minute"] = data["time_bucket"].dt.minute
+    data = encode_cyclical_feature(data, "month", 12)
+    data = encode_cyclical_feature(data, "day", 31)
+    data = encode_cyclical_feature(data, "hour", 24)
+    data = encode_cyclical_feature(data, "minute", 60)
+    data = encode_cyclical_feature(data, "weekday", 7)
+    data = data.drop(columns=["month", "day", "hour", "minute", "weekday"])
 
     # using 2024 data as training, 2025 as test
     train_data = data[data["time_bucket"] < boundary_time]
