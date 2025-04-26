@@ -77,7 +77,7 @@ def prepare_bus_data(data):
     # print(f"Train data shape: {train_data.shape}")
     # print(f"Test data shape: {test_data.shape}")
 
-    drop_columns = ["delay_total", "count", "avg_delay"]
+    drop_columns = ["delay_total", "count", "late_5_min", "early_5_min"]
     X_train = train_data.drop(columns=drop_columns)
     y_train = train_data["avg_delay"]
     X_test = test_data.drop(columns=drop_columns)
@@ -87,25 +87,34 @@ def prepare_bus_data(data):
 
 
 class BusDelayPredictor:
+    def get_context_length(self):
+        return 0
+
     def evaluate(self, test_X, test_y):
         self.load()
         y_pred = self.predict(test_X)
+        test_y = test_y[self.get_context_length() :]
         print("Shape of y_pred:", y_pred.shape)
         print("Shape of test_y:", test_y.shape)
         mse = mean_squared_error(test_y, y_pred)
         return mse
-    
+
     def load(self):
         pass
-    
+
     def predict(self):
-        raise NotImplementedError("Predict function not implemented for this BusDelayPredictor")
+        raise NotImplementedError(
+            "Predict function not implemented for this BusDelayPredictor"
+        )
 
 
 class LSTMPredictor(BusDelayPredictor):
     def __init__(self, model, window_size=24):
         self.model = model
         self.window_size = window_size
+
+    def get_context_length(self):
+        return self.window_size
 
     def train(self, X, y, epochs=10, batch_size=32, learning_rate=0.001):
         X = X.drop(columns=["time_bucket"])
@@ -174,18 +183,22 @@ class LSTMPredictor(BusDelayPredictor):
 
         return y_pred.squeeze().detach().numpy()
 
-    def evaluate(self, test_X, test_y):
-        self.load()
-        y_pred = self.predict(test_X)
-        print("Shape of y_pred:", y_pred.shape)
-        test_y = test_y[self.window_size :]
-        print("Shape of test_y:", test_y.shape)
-        mse = mean_squared_error(test_y, y_pred)
-        return mse
-
 
 class XGBoostPredictor(BusDelayPredictor):
-    def __init__(self, n_estimators=100, learning_rate=0.1, max_depth=5, min_child_weight=1, subsample=0.8, colsample_bytree=0.8, reg_lambda=1):
+    def __init__(
+        self,
+        n_estimators=100,
+        learning_rate=0.1,
+        max_depth=5,
+        min_child_weight=1,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_lambda=1,
+        lagged_features=None,
+        lag_offsets=None,
+        avg_features=None,
+        avg_ranges=None,
+    ):
         self.model = xgb.XGBRegressor(
             objective="reg:squarederror",
             n_estimators=n_estimators,
@@ -196,9 +209,44 @@ class XGBoostPredictor(BusDelayPredictor):
             colsample_bytree=colsample_bytree,
             reg_lambda=reg_lambda,
         )
+        self.lagged_features = lagged_features
+        self.lag_offsets = lag_offsets
+        self.avg_features = avg_features
+        self.avg_ranges = avg_ranges
+        self.context_length = 0
+
+    def get_context_length(self):
+        return self.context_length
+
+    def prepare_features(self, X):
+        context_length = 0
+        if self.avg_features is not None:
+            for feature in self.avg_features:
+                for avg_range in self.avg_ranges:
+                    X[f"{feature}_avg_{avg_range}"] = (
+                        X[feature].rolling(avg_range, closed="left").mean()
+                    )
+            context_length = max(self.context_length, max(self.avg_ranges))
+
+        if self.lagged_features is not None:
+            for feature in self.lagged_features:
+                for lag_offset in self.lag_offsets:
+                    X[f"{feature}_lag_{lag_offset}"] = X[feature].shift(lag_offset)
+            context_length = max(self.context_length, max(self.lag_offsets))
+
+        self.context_length = context_length
+        return X
 
     def train(self, X, y):
-        X = X.drop(columns=["time_bucket"])
+        X = self.prepare_features(X.copy())
+
+        if self.context_length > 0:
+            # remove the first context_length rows, since they don't have enough data
+            X = X[self.context_length :]
+            y = y.copy()[self.context_length :]
+
+        X = X.drop(columns=["time_bucket", "avg_delay"])
+
         X_train, X_val, y_train, y_val = train_test_split(
             X.values, y.values, test_size=0.2, shuffle=False
         )
@@ -213,7 +261,14 @@ class XGBoostPredictor(BusDelayPredictor):
         self.model.load_model("xgboost_predictor.json")
 
     def predict(self, X):
-        X = X.drop(columns=["time_bucket"])
+        X = self.prepare_features(X.copy())
+
+        if self.context_length > 0:
+            # remove the first context_length rows, since they don't have enough data
+            X = X[self.context_length :]
+
+        X = X.drop(columns=["time_bucket", "avg_delay"])
+
         y_pred = self.model.predict(X.values)
         return y_pred
 
@@ -328,22 +383,21 @@ class TFTPredictor(BusDelayPredictor):
 
 class NullModel(BusDelayPredictor):
     """Model that assumes the schedules are entirely correct."""
-    
+
     def predict(self, X):
         return np.array([0] * len(X))
-    
-    
+
+
 class BaselineModel(BusDelayPredictor):
     """Model that simply uses the average for a given day of week and time of day."""
-    
+
     def train(self, X: pd.DataFrame, y: pd.DataFrame):
         df = X[["weekday", "minute"]].copy()
         df["delay"] = y.values
         self.parameters = df.groupby(["weekday", "minute"]).mean()
         return self.parameters
-    
+
     def predict(self, X: pd.DataFrame):
         df = X[["weekday", "minute"]]
         df = df.join(self.parameters, ["weekday", "minute"])
         return df["delay"]
-    
