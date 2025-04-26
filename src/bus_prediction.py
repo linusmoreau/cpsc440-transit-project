@@ -295,6 +295,7 @@ class TFTPredictor(BusDelayPredictor):
         self.attention_head_size = attention_head_size
 
     def prepare_data(self, X, y):
+        X = X.copy().drop(columns=["avg_delay"])
         data = pd.concat([X, y], axis=1)
 
         # add constant bus_id as group id
@@ -314,9 +315,7 @@ class TFTPredictor(BusDelayPredictor):
 
         data = self.prepare_data(X, y)
 
-        data_train, data_val = train_test_split(
-            data.values, test_size=0.2, shuffle=False
-        )
+        data_train, data_val = train_test_split(data, test_size=0.2, shuffle=False)
 
         self.training_ds = TimeSeriesDataSet(
             data_train,
@@ -376,7 +375,7 @@ class TFTPredictor(BusDelayPredictor):
 
         test_ds = TimeSeriesDataSet.from_dataset(
             self.training_ds,
-            data.values,
+            data,
             predict=True,
             stop_randomization=True,
         )
