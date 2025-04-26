@@ -41,11 +41,13 @@ class LSTMModule(nn.Module):
 
 
 class DelayDataset(Dataset):
-    def __init__(self, X, y, window_size):
+    def __init__(self, X, y, lag_offsets):
         X_lagged = []
         y_lagged = []
-        for i in range(window_size, len(X)):
-            X_lagged.append(X[i - window_size : i])
+        context_length = max(lag_offsets)
+        for i in range(context_length, len(X)):
+            lagged_locations = [i - lag_offset for lag_offset in lag_offsets]
+            X_lagged.append(X[lagged_locations])
             y_lagged.append(y[i])
         self.X = torch.tensor(X_lagged, dtype=torch.float32)
         self.y = torch.tensor(y_lagged, dtype=torch.float32).view(-1, 1)
@@ -109,15 +111,16 @@ class BusDelayPredictor:
 
 
 class LSTMPredictor(BusDelayPredictor):
-    def __init__(self, model, window_size=24):
+    def __init__(self, model, lag_offsets):
         self.model = model
-        self.window_size = window_size
+        self.lag_offsets = lag_offsets
+        self.context_length = max(lag_offsets)
 
     def get_context_length(self):
-        return self.window_size
+        return self.context_length
 
     def train(self, X, y, epochs=10, batch_size=32, learning_rate=0.001):
-        X = X.drop(columns=["time_bucket", "avg_delay"])
+        X = X.drop(columns=["time_bucket"])
 
         self.scaler = MinMaxScaler()
         X[numerical_columns] = self.scaler.fit_transform(X[numerical_columns])
@@ -126,8 +129,8 @@ class LSTMPredictor(BusDelayPredictor):
             X.values, y.values, test_size=0.2, shuffle=False
         )
 
-        train_ds = DelayDataset(X_train, y_train, self.window_size)
-        val_ds = DelayDataset(X_val, y_val, self.window_size)
+        train_ds = DelayDataset(X_train, y_train, self.lag_offsets)
+        val_ds = DelayDataset(X_val, y_val, self.lag_offsets)
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False)
         val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
@@ -168,14 +171,15 @@ class LSTMPredictor(BusDelayPredictor):
         self.model.eval()
 
     def predict(self, X):
-        X = X.drop(columns=["time_bucket", "avg_delay"])
+        X = X.drop(columns=["time_bucket"])
         X[numerical_columns] = self.scaler.transform(X[numerical_columns])
         X = X.values
 
         # create lagged X, just like DelayDataset
         X_lagged = []
-        for i in range(self.window_size, len(X)):
-            X_lagged.append(X[i - self.window_size : i])
+        for i in range(self.context_length, len(X)):
+            lagged_locations = [i - lag_offset for lag_offset in self.lag_offsets]
+            X_lagged.append(X[lagged_locations])
         X = torch.tensor(X_lagged, dtype=torch.float32)
 
         with torch.no_grad():
@@ -310,7 +314,9 @@ class TFTPredictor(BusDelayPredictor):
 
         data = self.prepare_data(X, y)
 
-        data_train, data_val = train_test_split(data, test_size=0.2, shuffle=False)
+        data_train, data_val = train_test_split(
+            data.values, test_size=0.2, shuffle=False
+        )
 
         self.training_ds = TimeSeriesDataSet(
             data_train,
@@ -370,15 +376,15 @@ class TFTPredictor(BusDelayPredictor):
 
         test_ds = TimeSeriesDataSet.from_dataset(
             self.training_ds,
-            data,
+            data.values,
             predict=True,
             stop_randomization=True,
         )
 
-        test_loader = test_ds.to_dataloader(train=False, batch_size=64)
+        self.test_loader = test_ds.to_dataloader(train=False, batch_size=64)
 
         # best_tft = TemporalFusionTransformer.load_from_checkpoint(self.trainer.checkpoint_callback.best_model_path)
-        self.trainer.test(self.model, test_loader, ckpt_path="best")
+        self.trainer.test(self.model, self.test_loader, ckpt_path="best")
 
 
 class NullModel(BusDelayPredictor):
