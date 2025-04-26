@@ -117,7 +117,7 @@ class LSTMPredictor(BusDelayPredictor):
         return self.window_size
 
     def train(self, X, y, epochs=10, batch_size=32, learning_rate=0.001):
-        X = X.drop(columns=["time_bucket"])
+        X = X.drop(columns=["time_bucket", "avg_delay"])
 
         self.scaler = MinMaxScaler()
         X[numerical_columns] = self.scaler.fit_transform(X[numerical_columns])
@@ -168,7 +168,7 @@ class LSTMPredictor(BusDelayPredictor):
         self.model.eval()
 
     def predict(self, X):
-        X = X.drop(columns=["time_bucket"])
+        X = X.drop(columns=["time_bucket", "avg_delay"])
         X[numerical_columns] = self.scaler.transform(X[numerical_columns])
         X = X.values
 
