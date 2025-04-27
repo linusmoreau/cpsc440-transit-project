@@ -96,8 +96,6 @@ class BusDelayPredictor:
         self.load()
         y_pred = self.predict(test_X)
         test_y = test_y[self.get_context_length() :]
-        print("Shape of y_pred:", y_pred.shape)
-        print("Shape of test_y:", test_y.shape)
         mse = mean_squared_error(test_y, y_pred)
         return mse
 
@@ -395,14 +393,27 @@ class NullModel(BusDelayPredictor):
 
 class BaselineModel(BusDelayPredictor):
     """Model that simply uses the average for a given day of week and time of day."""
+    
+    def __init__(self, by_route=False):
+        self.by_route = by_route
+        self.group_by = ["weekday", "minute"]
+        if self.by_route:
+            self.group_by.extend(["vehicle.trip.route_id", "vehicle.trip.direction_id"])
+            self.fallback = BaselineModel(by_route=False)
 
     def train(self, X: pd.DataFrame, y: pd.DataFrame):
-        df = X[["weekday", "minute"]].copy()
+        df = X[self.group_by].copy()
         df["delay"] = y.values
-        self.parameters = df.groupby(["weekday", "minute"]).mean()
-        return self.parameters
+        self.parameters = df.groupby(self.group_by).mean()
+        
+        if self.by_route:
+            self.fallback.train(X, y)
+            
 
     def predict(self, X: pd.DataFrame):
-        df = X[["weekday", "minute"]]
-        df = df.join(self.parameters, ["weekday", "minute"])
+        df = X[self.group_by]
+        df = df.join(self.parameters, self.group_by)
+        if self.by_route:
+            df.loc[df["delay"].isna(), "delay"] = self.fallback.predict(X[df["delay"].isna()])
+        df["delay"] = df["delay"].fillna(0)
         return df["delay"]
